@@ -1,4 +1,5 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalAction } from "./_generated/server";
+import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 
 export const sendMessage = mutation({
@@ -12,6 +13,19 @@ export const sendMessage = mutation({
       user: args.user,
       body: args.body,
     });
+
+    // Add the following lines:
+    if (args.body.startsWith("/wiki")) {
+      // Get the string after the first space
+      const topic = args.body.slice(args.body.indexOf(" ") + 1);
+
+      // - Schedules the internal action to run immediately. scheduler is the only way to trigger an action from within a mutation
+      // - Scheduler just writes to DB to tell Convex to run the action later 
+      // - If mutation throws an error even after this line of code, the action won't be scheduled
+      await ctx.scheduler.runAfter(0, internal.chat.getWikipediaSummary, {
+        topic,
+      });
+    }
   },
 });
 
@@ -24,3 +38,27 @@ export const getMessages = query({
     return messages.reverse();
   },
 });
+
+// Internal Action means this function will be internal to the convex backend (not a public API we can call)
+export const getWikipediaSummary = internalAction({
+  args: { topic: v.string() },
+  handler: async (ctx, args) => {
+    const response = await fetch(
+      "https://en.wikipedia.org/w/api.php?format=json&action=query&prop=extracts&exintro&explaintext&redirects=1&titles=" +
+      args.topic,
+    );
+
+    const summary = getSummaryFromJSON(await response.json());
+
+    // pass the result of the wikipedia API call to the sendMessage mutation
+    await ctx.scheduler.runAfter(0, api.chat.sendMessage, {
+      user: "Wikipedia",
+      body: summary,
+    });
+  },
+});
+
+function getSummaryFromJSON(data: any) {
+  const firstPageId = Object.keys(data.query.pages)[0];
+  return data.query.pages[firstPageId].extract;
+}
